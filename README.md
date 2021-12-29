@@ -659,14 +659,11 @@ mpu6050有两种方法进行姿态解算，其一是运用内置的DMP运算处�
 
 对应的旋转矩阵如下
 
-![2](http://latex.codecogs.com/svg.latex? M_x=\begin{bmatrix} 1 & 0 & 0 \\ 0 & cosr & sinr \\ 0 & -sinr & cosr \end{bmatrix}
-M_y=\begin{bmatrix} cosp & 0 & sinp \\ 0 & 1 & 0 \\ -sinp & 0 & cosp \end{bmatrix}
-M_z = \begin{bmatrix} cosy & siny & 0 \\ -siny & cosy & 0 \\ 0 & 0 & 1 \end{bmatrix})
+![image-20211229192306485](image/08.png)
 
 则mpu6050的计算方式可以描述为
 
-![3](http://latex.codecogs.com/svg.latex? \begin{bmatrix}a_x \\ a_y \\ a_z\end{bmatrix}=
-M_xM_yM_z\begin{bmatrix}0 \\ 0 \\ g\end{bmatrix} = \begin{bmatrix} -sinp \\ cospsinr\\cospcosr \end{bmatrix}g)
+![image-20211229192306485](image/09.png)
 
 通过这个方程可以得到r和p
 
