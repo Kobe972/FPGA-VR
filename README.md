@@ -1,5 +1,15 @@
 # 基于FPGAO的VR眼镜使用及场景搭建
 
+通过fpga的开发板和mpu6050姿态控制芯片进行IIC通信，然后再通过串口通信将mpu6050读出的信息发送给电脑的串口。最后通过unity脚本读出串口信息获取当前芯片姿态来实现人机交互，最后将设计好的unity场景投屏到手机上再将手机投屏放入VR眼镜中完成设计。
+
+## 项目分工
+
+PB20061229吕泽龙：主要负责verilog部分代码，实现IIC协议的状态机和串口通信，并调试串口，在unity脚本中读取串口信息。
+
+xyc：
+
+## 项目框架
+
 ## IIC协议
 
 ### 技术性能
@@ -341,9 +351,219 @@ default:state <= IDLE;
 
 板载主时钟为100MHz，因此串行数据波特率为115200时，每个位持续约868个周期，我们用分频计数器进行计数，当接收信号为0时（起始位），分频计数器开始计数，计数值达到433时（起始位中间时刻），状态机从空闲状态跳转到接收状态，分频计数器在0~867循环计数，同时用位计数器进行位计数，可以看出当分频计数器值为“867”时，对应的就是串行接收信号对应位的最佳采样时刻（处于该位的中间时刻），通过位采样信号接收1bit的数据，保存到输出数据（8bit）的对应位中，在输出使能为高电平时将接收到的整个字节输出出去。
 
+~~~verilog
+module rx(
+    input               clk,rst_n,
+    input               rx,
+    output  reg         rx_vld,
+    output  reg  [7:0]  rx_data
+    );
+parameter   DIV_CNT   = 10'd867;
+parameter   HDIV_CNT  = 10'd433;
+parameter   RX_CNT    = 4'h8;
+parameter   C_IDLE    = 1'b0;
+parameter   C_RX      = 1'b1;    
+reg         curr_state;
+reg         next_state;
+reg [9:0]   div_cnt;
+reg [3:0]   rx_cnt;
+reg         rx_reg_0,rx_reg_1,rx_reg_2,rx_reg_3,rx_reg_4,rx_reg_5,rx_reg_6,rx_reg_7;
+//reg [7:0]   rx_reg;
+wire        rx_pulse;
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        curr_state  <= C_IDLE;
+    else
+        curr_state  <= next_state;
+end    
+always@(*)
+begin
+    case(curr_state)
+        C_IDLE:
+            if(div_cnt==HDIV_CNT)
+                next_state  = C_RX;
+            else
+                next_state  = C_IDLE;
+        C_RX:
+            if((div_cnt==DIV_CNT)&&(rx_cnt>=RX_CNT))
+                next_state  = C_IDLE;
+            else
+                next_state  = C_RX;
+    endcase
+end
+
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        div_cnt <= 10'h0;
+    else if(curr_state == C_IDLE)
+    begin
+        if(rx==1'b1)
+            div_cnt <= 10'h0;
+        else if(div_cnt < HDIV_CNT)
+            div_cnt <= div_cnt + 10'h1;
+        else
+            div_cnt <= 10'h0;    
+    end
+    else if(curr_state == C_RX)
+    begin
+        if(div_cnt >= DIV_CNT)
+            div_cnt <= 10'h0;
+        else
+            div_cnt <= div_cnt + 10'h1;
+    end
+end
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        rx_cnt  <= 4'h0;
+    else if(curr_state == C_IDLE)
+        rx_cnt  <= 4'h0;
+    else if((div_cnt == DIV_CNT)&&(rx_cnt<4'hF))
+        rx_cnt  <= rx_cnt + 1'b1;      
+end
+assign rx_pulse = (curr_state==C_RX)&&(div_cnt==DIV_CNT);
+always@(posedge clk)
+begin
+    if(rx_pulse)
+    begin
+        case(rx_cnt)
+            4'h0: rx_reg_0 <= rx;
+            ...
+            4'h7: rx_reg_7 <= rx;
+        endcase
+    end
+end
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+    begin
+        rx_vld  <= 1'b0;
+        rx_data <= 8'h55;
+    end    
+    else if((curr_state==C_RX)&&(next_state==C_IDLE))
+    begin
+        rx_vld  <= 1'b1;
+        rx_data <= {rx_reg_7,rx_reg_6,rx_reg_5,rx_reg_4,rx_reg_3,rx_reg_2,rx_reg_1,rx_reg_0};
+    end
+    else
+        rx_vld  <= 1'b0;
+end
+endmodule
+
+~~~
+
+
+
 ### 发送数据
 
 和接收数据类似，只不过多设置了一个tx_rd接口，高电平表示当前有数据正在输出。
+
+~~~verilog
+module tx(
+    input           clk,rst_n,
+    output  reg     tx,
+    input           tx_ready,
+    output  reg     tx_rd,
+    input   [7:0]   tx_data
+);
+parameter   DIV_CNT   = 10'd867;
+parameter   HDIV_CNT  = 10'd433;
+parameter   TX_CNT    = 4'h9;
+parameter   C_IDLE    = 1'b0;
+parameter   C_TX      = 1'b1;    
+    
+reg         curr_state,next_state;    
+reg [9:0]   div_cnt;
+reg [4:0]   tx_cnt;
+reg [7:0]   tx_reg;
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        curr_state  <= C_IDLE;
+    else
+        curr_state  <= next_state;
+end    
+always@(*)
+begin
+    case(curr_state)
+        C_IDLE:
+            if(tx_ready==1'b1)
+                next_state  = C_TX;
+            else
+                next_state  = C_IDLE;
+        C_TX:
+            if((div_cnt==DIV_CNT)&&(tx_cnt>=TX_CNT))
+                next_state  = C_IDLE;
+            else
+                next_state  = C_TX;
+    endcase
+end
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        div_cnt <= 10'h0;
+    else if(curr_state==C_TX)
+    begin
+        if(div_cnt>=DIV_CNT)
+            div_cnt <= 10'h0;
+        else
+            div_cnt <= div_cnt + 10'h1;
+    end
+    else
+        div_cnt <= 10'h0;
+end
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        tx_cnt  <= 4'h0;
+    else if(curr_state==C_TX)
+    begin
+        if(div_cnt==DIV_CNT)
+            tx_cnt <= tx_cnt + 1'b1;
+    end
+    else
+        tx_cnt <= 4'h0;
+end
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        tx_rd   <= 1'b0;
+    else if((curr_state==C_IDLE)&&(tx_ready==1'b1))
+        tx_rd   <= 1'b1;
+    else
+        tx_rd   <= 1'b0;
+end
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        tx_reg  <= 8'b0;
+    else if((curr_state==C_IDLE)&&(tx_ready==1'b1))
+        tx_reg  <= tx_data;
+end
+
+always@(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        tx  <= 1'b1;
+    else if(curr_state==C_IDLE)
+        tx  <= 1'b1;
+    else if(div_cnt==10'h0)
+    begin
+        case(tx_cnt)
+            4'h0:   tx  <= 1'b0;
+            4'h1:   tx  <= tx_reg[0];
+            ...
+            4'h9:   tx  <= 1'b1;
+        endcase
+    end
+end
+endmodule
+
+~~~
+
+
 
 ## 顶层设计
 
@@ -416,3 +636,38 @@ endmodule
 ~~~
 
 这样就成功地从电脑读取了mpu6050的数据。采样频率为100HZ
+
+### 运行效果
+
+采用串口调试工具得到的数据如下所示。
+
+![image-20211229000117738](image/06.png)
+
+这组数据是我在水平放置mpu6050的情况下测试的，可以先对数据进行一个简单的测算。根据手册。第一片mpu6050的前6组数据0xFA62，0xFBD8和0x487C是三轴的加速度。事实上，前两个x，y轴的加速度是很小的。而后一组0x487C转换成10进制是18556。根据数据手册，计算方式是$a_z=18556/16384.0g$，相对来说还是较为准确的。
+
+## 姿态解算
+
+mpu6050有两种方法进行姿态解算，其一是运用内置的DMP运算处理器通过四元数进行解算，但是这种方式需要连接其他的地磁外设，并未采用，我们采取欧拉角的方式尝试进行解算。
+
+注意到mpu6050得到的三轴加速度是重力加速度在以mpu6050的惯性系中的加速分量。因此实际上只需要计算出当前mpu6050的偏角就可以得到加速度了。
+
+姿态解算选用的旋转顺序为**ZYX**，即IMU坐标系初始时刻与大地坐标系重合，然后依次绕自己的Z、Y、X轴进行旋转，这里先自定义一下每次的旋转名称和符号：
+
+- 绕IMU的**Z轴**旋转：**航向角yaw**， 转动 **y** 角度
+- 绕IMU的**Y轴**旋转：**俯仰角pitch**，转动 **p** 角度
+- 绕IMU的**X轴**旋转：**横滚角row**， 转动 **r** 角度
+
+对应的旋转矩阵如下
+$$
+M_x=\begin{bmatrix} 1 & 0 & 0 \\ 0 & cosr & sinr \\ 0 & -sinr & cosr \end{bmatrix}
+M_y=\begin{bmatrix} cosp & 0 & sinp \\ 0 & 1 & 0 \\ -sinp & 0 & cosp \end{bmatrix}
+M_z = \begin{bmatrix} cosy & siny & 0 \\ -siny & cosy & 0 \\ 0 & 0 & 1 \end{bmatrix}
+$$
+则mpu6050的计算方式可以描述为
+$$
+\begin{bmatrix}a_x \\ a_y \\ a_z\end{bmatrix}=
+M_xM_yM_z\begin{bmatrix}0 \\ 0 \\ g\end{bmatrix} = \begin{bmatrix} -sinp \\ cospsinr\\cospcosr \end{bmatrix}g
+$$
+通过这个方程可以得到r和p
+
+事实上进一步推导可以得到角速度的值，然而，由于实验中灵敏度和采样频率的相关问题，我们尝试直接得到位移数据的方法失败，因此我们的整个项目仅仅根据r和p的角度来对场景中的人物进行控制。
